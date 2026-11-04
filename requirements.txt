@@ -15,3 +15,4 @@ pyyaml
 arize-phoenix-otel
 openinference-instrumentation-langchain
 pytest
+streamlit

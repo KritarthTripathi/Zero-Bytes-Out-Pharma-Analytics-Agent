@@ -1,0 +1,33 @@
+# Adds the login UI and the audit key to the existing stack. Used together with docker-compose.yml
+# (set COMPOSE_FILE=docker-compose.yml:docker-compose.ui.yml in .env so plain `docker compose` commands include it).
+secrets:
+  audit_hmac_key:
+    file: ./secrets/audit_hmac_key
+
+services:
+  app:
+    secrets: [audit_hmac_key]
+
+  ui:
+    build: .
+    image: clinical-co-pilot-app
+    env_file: .env
+    command: ["streamlit", "run", "src/app/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true",
+              "--browser.gatherUsageStats=false", "--server.fileWatcherType=none"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    secrets: [pii_vault_key, audit_hmac_key]
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+    depends_on: [ollama, phoenix]
+    networks: [internal]
+
+  # publishes the UI on the host (localhost only); the UI itself stays on the internal network
+  ui-web:
+    image: alpine/socat
+    command: tcp-listen:8501,fork,reuseaddr tcp:ui:8501
+    ports: ["127.0.0.1:8501:8501"]
+    networks: [internal, edge]
+    depends_on: [ui]

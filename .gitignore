@@ -7,3 +7,5 @@ data/vault/*
 !data/vault/.gitkeep
 bundle/
 __pycache__/
+data/auth/
+data/audit/
