@@ -6,6 +6,7 @@ Developed on synthetic data and staged on an Azure VM, designed to move to an ai
 
 **Status:** ongoing | **Data:** 100% synthetic | **Stack:** LangGraph · Ollama · DuckDB · Presidio · Arize Phoenix · Docker
 
+The branch feature-initial-unscoped consists of a simpler architecture base on which the project was initiated and later moved to a heirarchial multi-agent hybrid routing system for scoped access control and better latency and acuracy when dealing with multiple datasets.
 
 ```
 input → ingest_mask (parse + PII mask + compliance) ──blocked──► END
@@ -18,7 +19,7 @@ input → ingest_mask (parse + PII mask + compliance) ──blocked──► END
                       output (optional local re-identification)
 ```
 
-## Design decisions 
+## Design decisions (initial)
 - **Raw text never enters graph state.** Masking happens inside the ingest node, so checkpoints and Phoenix traces only ever hold masked content. The placeholder→original map lives in an encrypted vault (Fernet key via docker secret), outside state.
 - **Deterministic PII first** (Presidio + spaCy + custom MRN/subject-ID/DOB/phone recognizers), with a residual re-scan as the compliance gate. To Do: Add an LLM/GLiNER contextual pass as a second layer.
 - **Enforced network isolation:** `internal: true` Docker network, plus `scripts/egress_test.sh` that fails if anything can reach the internet.
@@ -51,8 +52,11 @@ Phoenix UI: http://localhost:6006 (on Azure, via SSH tunnel through Bastion).
 - Add a GLiNER or LLM contextual-PII layer and a config-driven HIPAA/GDPR policy file.
 - Replace the compliance `blocked` edge with a LangGraph `interrupt()` for review.
 - Phoenix Evals with a local judge model (hallucination, extraction accuracy).
-- Pin dependencies (`pip freeze > requirements.lock`) once the stack builds.
 - Verify the Phoenix telemetry-disable variable and Azure extension names against current docs.
+- Scale test with distractor tables: the evidence for scoped agents at 1,500+ datasets. 
+- IQ/OQ/PQ, risk table and traceability matrix, generated automatically from the tests and evals.
+- E-signatures on report approval, plus SOP and change-control templates.
+- Azure benchmark (CPU versus GPU speed) and a Databricks port design, with Unity Catalog grants, model serving and monitoring.
 
 ## First metrics 
  - Resulted in planted=142 leaked=57 recall=0.599 which was corrected to recall 1.000 after masking the mail Ids
