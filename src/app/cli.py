@@ -1,11 +1,12 @@
 import argparse
 import getpass
+import json
 
 from app.agents.hierarchy import run_question
 from app.common.audit import get_audit
 from app.common.auth import AuthDB
 from app.common.envcheck import verify_environment
-from app.common.qmask import mask_question
+from app.common.qmask import PH, mask_question, safe_reidentify
 from app.common.tracing import init_tracing
 from app.common.vault import PIIVault
 
@@ -52,8 +53,9 @@ def main():
     out = st.get("answer", "")
     if st.get("table"):
         out += f"\n\n{st['table']}"
-    if not args.masked:                      # re-identification happens here, outside the traced graph
-        out = vault.reidentify("pharma", out)
+    if not args.masked:                      # re-identification happens here, outside the traced graph, for codes in the result only
+        allowed = set(PH.findall((st.get("table") or "") + json.dumps(st.get("rows") or [])))
+        out = safe_reidentify(out, vault.load("pharma"), allowed)
     note = (st.get("plan") or {}).get("scope_note")
     print(out + (f"\n\nSQL: {st['sql']}\n(agent: {st.get('agent')}, attempts: {st.get('attempts')}" if st.get("sql") else f"\n\n(agent: {st.get('agent')}, status: {st.get('status')}")
           + (f", results limited to: {note}" if note else "") + ")")

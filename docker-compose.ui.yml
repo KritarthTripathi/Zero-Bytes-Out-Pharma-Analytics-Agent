@@ -12,7 +12,7 @@ services:
     build: .
     image: clinical-co-pilot-app
     env_file: .env
-    command: ["streamlit", "run", "src/app/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true",
+    command: ["streamlit", "run", "src/app/ui/chat_ui.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true",
               "--browser.gatherUsageStats=false", "--server.fileWatcherType=none"]
     environment:
       PYTHONDONTWRITEBYTECODE: "1"

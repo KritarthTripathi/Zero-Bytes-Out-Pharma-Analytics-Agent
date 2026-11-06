@@ -1,11 +1,12 @@
 """UI helpers without any Streamlit import (so they can be reused and tested): sign-in, asking a question as a user, feedback."""
+import json
 import time
 from functools import lru_cache
 
 from app.agents.hierarchy import run_question
 from app.common.audit import get_audit
 from app.common.auth import AuthDB
-from app.common.qmask import mask_question
+from app.common.qmask import PH, mask_question, safe_reidentify
 from app.common.vault import PIIVault
 
 SESSION_SECONDS = 1800
@@ -29,7 +30,9 @@ def ask(user: dict, question: str, masked_view: bool = False) -> dict:
     masked_q = mask_question(question, vault.load("pharma"))
     t0 = time.time()
     st = run_question(masked_q, checkpoint=False, user=user, audit=audit_log())
-    show = (lambda x: x) if masked_view else (lambda x: vault.reidentify("pharma", x) if isinstance(x, str) else x)
+    allowed = set(PH.findall((st.get("table") or "") + json.dumps(st.get("rows") or [])))      # only codes that are part of the result
+    mapping = vault.load("pharma")
+    show = (lambda x: x) if masked_view else (lambda x: safe_reidentify(x, mapping, allowed) if isinstance(x, str) else x)
     info = st.get("route_info", {})
     sup, sal = info.get("supervisor", {}), info.get("sales")
     return {"answer": show(st.get("answer", "")), "columns": st.get("columns") or [], "rows": [[show(v) for v in r] for r in (st.get("rows") or [])],

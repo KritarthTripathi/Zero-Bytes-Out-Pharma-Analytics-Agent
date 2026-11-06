@@ -10,6 +10,7 @@ import duckdb
 from app.common.access import SCOPE_COL, build_access, is_restricted, predicate_for
 from app.common.config import settings
 from app.common.llm import get_llm
+from app.sales.narration import plain_summary, valid_narration
 from app.sales.semantic.catalog import GEO_VIEWS, RELATIONS, make_plan, render_prompt
 from app.sales.sql_guard import guard
 
@@ -155,6 +156,6 @@ def narrate_node(state):
         return {"table": table, "answer": ""}
     prompt = (f"Question: {state['question']}\nResults:\n{table}\n"
               "Answer in one or two short sentences using only numbers shown in the results. "
-              "Keep placeholders like <HCP_FULL_NAME_3> exactly as written.")
+              "If the results contain codes in angle brackets, copy them exactly; never write a code that is not in the results.")
     text = get_llm("router").invoke(prompt).content.strip()
-    return {"table": table, "answer": text if grounded(text, table) else "(summary skipped: numbers could not be verified; see table)"}
+    return {"table": table, "answer": text if valid_narration(text, table) else plain_summary(state["columns"], state["rows"])}

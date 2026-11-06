@@ -62,6 +62,7 @@ def check_access(ents, access, asked_level):
         if col == "hcp_full_name" and val not in access["hcps"]:
             return f"That HCP is outside your access scope ({t})."
     if asked_level and asked_level != "DIVISION" and asked_level not in access["levels"]:
-        allowed = ", ".join(x.lower() + "s" for x in access["levels"])
+        plural = {"TERRITORY": "territories", "DISTRICT": "districts", "AREA": "areas"}
+        allowed = ", ".join(plural[x] for x in access["levels"])
         return f"{asked_level.title()}-level comparisons are outside your access scope ({t}). You can compare: {allowed}."
     return None
