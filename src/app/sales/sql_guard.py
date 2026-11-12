@@ -65,8 +65,6 @@ def guard(sql: str, agent=None, max_rows: int = 500) -> str:
             raise ValueError("file-reading functions are not allowed")
         if name in TIME_FUNCS or anon in TIME_FUNCS:
             raise ValueError("do not use CURRENT_DATE or NOW(); the data is fixed, use the latest-period views")
-    if any(t.args.get("db") or t.args.get("catalog") for t in tree.find_all(exp.Table)):
-        raise ValueError("qualified table names (schema.table) are not allowed")
     ctes = {c.alias for c in tree.find_all(exp.CTE)}
     tables = {t.name for t in tree.find_all(exp.Table)}
     bad = tables - allowed - ctes

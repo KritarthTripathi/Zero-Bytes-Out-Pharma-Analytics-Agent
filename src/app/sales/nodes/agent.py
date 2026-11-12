@@ -10,8 +10,7 @@ import duckdb
 from app.common.access import SCOPE_COL, build_access, is_restricted, predicate_for
 from app.common.config import settings
 from app.common.llm import get_llm
-from app.sales.narration import plain_summary, valid_narration
-from app.sales.semantic.catalog import GEO_VIEWS, RELATIONS, make_plan, render_prompt
+from app.sales.semantic.catalog import make_plan, render_prompt
 from app.sales.sql_guard import guard
 
 DB = Path(settings.work_dir) / "pharma.duckdb"
@@ -73,10 +72,9 @@ def extract_sql(text: str) -> str:
 def select_views_node(state):
     con = connect()
     known = load_known(con)
-    access = load_access(con, state.get("scope"))
     data_end = str(con.execute("SELECT MAX(grain_end_date) FROM hcp_rx_summary_report").fetchone()[0])
     con.close()
-    plan = make_plan(state["question"], known, state.get("agent"), access)
+    plan = make_plan(state["question"], known, state.get("agent"))
     return {"plan": plan, "views": plan["relations"], "data_end": data_end, "attempts": 0, "error": ""}
 
 
@@ -113,8 +111,6 @@ def execute_node(state):
 def validate_node(state):
     rows, cols = state.get("rows", []), state.get("columns", [])
     if not rows or all(v is None for r in rows for v in r):
-        if is_restricted(state.get("scope")):             # nothing inside the user's scope: answer plainly, do not retry
-            return {"error": "", "rows": [], "columns": cols}
         return {"error": "query returned no rows or only NULL; check filters and the grain"}
     for j, c in enumerate(cols):
         if COUNT_COLS.fullmatch(c.lower()) and any(isinstance(r[j], (int, float)) and r[j] < 0 for r in rows):
@@ -156,6 +152,6 @@ def narrate_node(state):
         return {"table": table, "answer": ""}
     prompt = (f"Question: {state['question']}\nResults:\n{table}\n"
               "Answer in one or two short sentences using only numbers shown in the results. "
-              "If the results contain codes in angle brackets, copy them exactly; never write a code that is not in the results.")
+              "Keep placeholders like <HCP_FULL_NAME_3> exactly as written.")
     text = get_llm("router").invoke(prompt).content.strip()
     return {"table": table, "answer": text if valid_narration(text, table) else plain_summary(state["columns"], state["rows"])}

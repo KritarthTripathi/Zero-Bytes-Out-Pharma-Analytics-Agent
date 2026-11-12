@@ -6,8 +6,6 @@ from pathlib import Path
 
 import yaml
 
-from app.common.access import check_access
-
 _DIR = Path(__file__).parent
 CATALOG = yaml.safe_load((_DIR / "metrics.yml").read_text())
 AGENTS_CFG = yaml.safe_load((_DIR / "agents.yml").read_text())
@@ -167,13 +165,8 @@ def _and(parts):
     return "".join(f" AND {p}" for p in parts)
 
 
-def make_plan(question: str, known: dict, agent=None, access=None) -> dict:
-    """access = access context of a restricted user (see app.common.access.build_access) or None for an unrestricted user."""
+def make_plan(question: str, known: dict, agent=None) -> dict:
     ents = link_entities(question, known)
-    denial = check_access(ents, access, ask_level(question))
-    if denial:
-        return {"out_of_scope": True, "denied": True, "agent": agent, "relations": [], "facts": [], "template": "", "grain": None, "metric": None,
-                "level": None, "entities": [list(e) for e in ents], "message": denial, "scope_note": access["text"] if access else None}
     metric = resolve_metric(question)
     rels = select_relations(question, ents, metric, agent)
     if not rels:
@@ -189,9 +182,6 @@ def make_plan(question: str, known: dict, agent=None, access=None) -> dict:
     level = None
     if primary in GEO_VIEWS:
         level = asked or ("TERRITORY" if has_tm else next((L for L, c in (("TERRITORY", "territory_name"), ("DISTRICT", "district_name"), ("AREA", "area_name"), ("DIVISION", "division_name")) if any(e[0] == c for e in ents)), "TERRITORY"))
-    group_col = LEVEL_COL[level] if level else None
-    if level == "DIVISION" and access:                       # division totals are answered inside the user's own scope
-        level, group_col = "TERRITORY", "division_name"
     filters, facts, uses_summary = [], [], False
     for c, v in ents:
         if c in TM_COLS and primary not in (SUMMARY, ALIGN):
@@ -205,7 +195,7 @@ def make_plan(question: str, known: dict, agent=None, access=None) -> dict:
     if primary in GRAIN_VIEWS:
         facts.append(f"grain_code = '{grain}' ({CATALOG['grains'][grain]})" + ("" if grain_stated else " - the default"))
     if level:
-        facts.append(f"geo_level = '{level}'" + (f"; group by {group_col}" if asked else ""))
+        facts.append(f"geo_level = '{level}'" + (f"; group by {LEVEL_COL[level]}" if asked else ""))
     if filters:
         facts.append("Filters: " + "; ".join(filters))
     where_f = _and(filters)
@@ -222,13 +212,13 @@ def make_plan(question: str, known: dict, agent=None, access=None) -> dict:
         t = (f"SELECT hcp_ref_id, hcp_full_name, product_name, trx, previous_trx, trx_change_pct FROM v_hcp_rx_trend "
              f"WHERE grain_code = '{grain}' AND previous_trx >= {D['min_previous_volume_for_trending']}{where_f} ORDER BY trx_change_pct {direction} LIMIT {k}")
     elif primary == "v_geo_trend":
-        lc = group_col
+        lc = LEVEL_COL[level]
         facts.append("Trending = percent change of SUM(trx) versus SUM(previous_trx).")
         t = (f"SELECT {lc}, SUM(trx) AS trx, SUM(previous_trx) AS previous_trx, (SUM(trx) - SUM(previous_trx)) * 100.0 / NULLIF(SUM(previous_trx), 0) AS trx_change_pct "
              f"FROM v_geo_trend WHERE geo_level = '{level}' AND grain_code = '{grain}'{where_f} GROUP BY {lc} "
              f"HAVING SUM(previous_trx) >= {D['min_previous_volume_for_trending']} ORDER BY trx_change_pct {direction}{lim(n or D['list_limit'])}")
     elif primary == "v_geo_latest":
-        lc = group_col
+        lc = LEVEL_COL[level]
         facts.append(f"Metric: {metric} (SUM({metric}))" + (f"; order {direction}" + (f"; limit {n}" if n else "") if asked else ""))
         t = (f"SELECT {lc}, SUM({metric}) AS {metric} FROM v_geo_latest WHERE geo_level = '{level}' AND grain_code = '{grain}'{where_f} GROUP BY {lc} ORDER BY {metric} {direction}{lim(n)}"
              if asked else f"SELECT SUM({metric}) AS {metric} FROM v_geo_latest WHERE geo_level = '{level}' AND grain_code = '{grain}'{where_f}")
@@ -242,8 +232,7 @@ def make_plan(question: str, known: dict, agent=None, access=None) -> dict:
         t = f"SELECT * FROM {ALIGN}" + (" WHERE " + " AND ".join(filters) if filters else "")
     extra = ([ALIGN] if has_tm and primary not in (SUMMARY, ALIGN) else []) + ([SUMMARY] if uses_summary and primary != SUMMARY else [])
     return {"out_of_scope": False, "agent": agent, "relations": [primary] + extra, "facts": facts, "template": t,
-            "grain": grain, "metric": metric, "level": level, "entities": [list(e) for e in ents],
-            "scope_note": access["text"] if access else None}
+            "grain": grain, "metric": metric, "level": level, "entities": [list(e) for e in ents]}
 
 
 def render_prompt(plan: dict, question: str, mode: str | None = None) -> str:

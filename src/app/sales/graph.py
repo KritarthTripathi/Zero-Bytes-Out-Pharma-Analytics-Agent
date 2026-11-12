@@ -45,5 +45,5 @@ def _agent_graph():
     return build_graph(checkpoint=False)
 
 
-def run_sales_agent(agent: str, question: str, skip_narrate: bool = False, scope: dict | None = None) -> dict:
-    return _agent_graph().invoke({"question": question, "agent": agent, "skip_narrate": skip_narrate, "attempts": 0, "scope": scope})
+def run_sales_agent(agent: str, question: str, skip_narrate: bool = False) -> dict:
+    return _agent_graph().invoke({"question": question, "agent": agent, "skip_narrate": skip_narrate, "attempts": 0})

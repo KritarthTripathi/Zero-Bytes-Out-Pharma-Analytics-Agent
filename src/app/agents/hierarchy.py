@@ -1,11 +1,7 @@
-"""Supervisor -> (clinical | sales router -> sales_geo | sales_hcp | sales_activity | clarify | out_of_scope | denied), as one LangGraph.
-Questions arrive already masked (names and emails replaced by the database's codes). A signed-in user brings a role, permissions
-and a data scope; the scope is enforced inside the sales agents (scoped views) and the planner refuses what is outside it."""
-import hashlib
+"""Supervisor -> (clinical | sales router -> sales_geo | sales_hcp | sales_activity | clarify | out_of_scope), as one LangGraph.
+Questions arrive already masked (names and emails replaced by the database's codes)."""
 import json
-import os
 import sqlite3
-import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
@@ -26,12 +22,10 @@ from app.sales.semantic.catalog import AGENTS_CFG, SALES_AGENTS
 class HState(TypedDict, total=False):
     question: str
     skip_narrate: bool
-    user: dict               # username, role, permissions of the signed-in user (None = developer mode)
-    scope: dict              # data scope of that user
     route: str
     sales_route: str
     route_info: dict
-    status: str              # answered | clarify | out_of_scope | denied | error
+    status: str              # answered | clarify | out_of_scope | error
     agent: str
     answer: str
     table: str
@@ -44,7 +38,7 @@ class HState(TypedDict, total=False):
 
 
 def _known() -> dict:
-    con = connect()          # privileged read-only connection: names and the hierarchy are needed to understand any question
+    con = connect()
     try:
         return load_known(con)
     finally:
@@ -54,11 +48,7 @@ def _known() -> dict:
 def supervisor_node(state):
     info = route_level("supervisor", state["question"], _known(), supervisor_llm)
     tag_span(**{"route.level": "supervisor", "route.final": info["final"], "route.method": info["method"]})
-    out = {"route": info["final"], "route_info": {"supervisor": info}}
-    user = state.get("user")
-    if user and info["final"] in ("clinical", "sales") and info["final"] not in user.get("permissions", []):
-        out.update({"route": "denied", "answer": f"Your role ({user.get('role')}) is not permitted to use the {info['final']} agent."})
-    return out
+    return {"route": info["final"], "route_info": {"supervisor": info}}
 
 
 def sales_router_node(state):
@@ -70,11 +60,9 @@ def sales_router_node(state):
 def _sales_node(agent: str):
     def node(state):
         tag_span(**{"agent.name": agent})
-        st = run_sales_agent(agent, state["question"], state.get("skip_narrate", False), scope=state.get("scope"))
+        st = run_sales_agent(agent, state["question"], state.get("skip_narrate", False))
         plan = st.get("plan") or {}
         base = {"agent": agent, "plan": plan, "attempts": st.get("attempts", 0)}
-        if plan.get("denied"):
-            return {**base, "status": "denied", "answer": plan["message"]}
         if plan.get("out_of_scope"):
             return {**base, "status": "out_of_scope", "answer": plan["message"]}
         if st.get("error"):
@@ -114,10 +102,6 @@ def out_of_scope_node(state):
             "\n- clinical: parse a clinical-trial protocol file."}
 
 
-def denied_node(state):
-    return {"status": "denied", "answer": state.get("answer", "Access denied.")}
-
-
 @lru_cache(maxsize=2)
 def build_hierarchy(checkpoint: bool = True):
     g = StateGraph(HState)
@@ -128,12 +112,10 @@ def build_hierarchy(checkpoint: bool = True):
     g.add_node("clinical", clinical_node)
     g.add_node("clarify", clarify_node)
     g.add_node("out_of_scope", out_of_scope_node)
-    g.add_node("denied", denied_node)
     g.set_entry_point("supervisor")
-    g.add_conditional_edges("supervisor", lambda s: s["route"], {"clinical": "clinical", "sales": "sales_router", "out_of_scope": "out_of_scope",
-                                                                  "clarify": "clarify", "denied": "denied"})
+    g.add_conditional_edges("supervisor", lambda s: s["route"], {"clinical": "clinical", "sales": "sales_router", "out_of_scope": "out_of_scope", "clarify": "clarify"})
     g.add_conditional_edges("sales_router", lambda s: s["sales_route"], {"sales_geo": "sales_geo", "sales_hcp": "sales_hcp", "sales_activity": "sales_activity", "clarify": "clarify"})
-    for n in ("sales_geo", "sales_hcp", "sales_activity", "clinical", "clarify", "out_of_scope", "denied"):
+    for n in ("sales_geo", "sales_hcp", "sales_activity", "clinical", "clarify", "out_of_scope"):
         g.add_edge(n, END)
     if not checkpoint:
         return g.compile()
@@ -141,37 +123,6 @@ def build_hierarchy(checkpoint: bool = True):
     return g.compile(checkpointer=SqliteSaver(sqlite3.connect(settings.checkpoint_db, check_same_thread=False)))
 
 
-@lru_cache(maxsize=1)
-def _env() -> dict:
-    try:
-        from app.common.envcheck import verify_environment
-        return verify_environment()
-    except Exception:
-        return {}
-
-
-def result_hash(rows) -> str:
-    return hashlib.sha256(json.dumps(rows or [], sort_keys=True, default=str).encode()).hexdigest()
-
-
-def _audit(audit, user, question, st, seconds):
-    info = st.get("route_info", {})
-    sup, sal = info.get("supervisor", {}), info.get("sales") or {}
-    audit.append("access_denied" if st.get("status") == "denied" else "question", user=user, question=question[:500], status=st.get("status"),
-                 agent=st.get("agent"), supervisor=f"{sup.get('final')}/{sup.get('method')}",
-                 sales_router=(f"{sal.get('final')}/{sal.get('method')}" if sal else None), sql=(st.get("sql") or "")[:1500],
-                 rows=len(st.get("rows") or []), result_sha256=result_hash(st.get("rows")), seconds=round(seconds, 1),
-                 manifest=_env().get("manifest_hash"), code_version=os.getenv("APP_VERSION", "dev"))
-
-
-def run_question(question: str, skip_narrate: bool = False, checkpoint: bool = True, user: dict | None = None, audit=None) -> dict:
-    """user: signed-in user from app.common.auth (None = developer mode, unrestricted). audit: AuditLog or None."""
-    init = {"question": question, "skip_narrate": skip_narrate}
-    if user:
-        init["user"] = {k: user[k] for k in ("username", "role", "permissions")}
-        init["scope"] = user.get("scope")
-    t0 = time.time()
-    st = build_hierarchy(checkpoint).invoke(init, config={"configurable": {"thread_id": uuid.uuid4().hex}})
-    if audit is not None:
-        _audit(audit, user, question, st, time.time() - t0)
-    return st
+def run_question(question: str, skip_narrate: bool = False, checkpoint: bool = True) -> dict:
+    return build_hierarchy(checkpoint).invoke({"question": question, "skip_narrate": skip_narrate},
+                                              config={"configurable": {"thread_id": uuid.uuid4().hex}})
