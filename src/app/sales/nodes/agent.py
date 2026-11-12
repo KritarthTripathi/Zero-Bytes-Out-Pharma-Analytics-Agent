@@ -7,6 +7,7 @@ from pathlib import Path
 
 import duckdb
 
+from app.common.access import SCOPE_COL, build_access, is_restricted, predicate_for
 from app.common.config import settings
 from app.common.llm import get_llm
 from app.sales.semantic.catalog import make_plan, render_prompt
@@ -16,13 +17,35 @@ DB = Path(settings.work_dir) / "pharma.duckdb"
 COUNT_COLS = re.compile(r"(trx|nbrx|nts|previous_\w+|remaining|suggested_engagements|activity_count|total\w*)")
 
 
-def connect():
-    con = duckdb.connect(str(DB), read_only=True)
+def connect(scope=None):
+    """Read-only connection. For a restricted user the model's SQL runs in an in-memory database that only contains
+    scope-filtered views of the approved relations; the real file is attached read-only under the name `base`
+    (the guard rejects qualified names such as base.table, so the unfiltered data cannot be reached)."""
+    if not is_restricted(scope):
+        con = duckdb.connect(str(DB), read_only=True)
+        try:
+            con.execute("SET enable_external_access=false")
+        except Exception:
+            pass
+        return con
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{DB}' AS base (READ_ONLY)")
+    for rel in RELATIONS:
+        con.execute(f"CREATE VIEW {rel} AS SELECT * FROM base.{rel} WHERE {predicate_for(scope, rel in GEO_VIEWS)}")
     try:
         con.execute("SET enable_external_access=false")
     except Exception:
         pass
     return con
+
+
+def load_access(con, scope):
+    """Hierarchy facts needed to refuse out-of-scope questions (None for unrestricted users). Uses the privileged connection."""
+    if not is_restricted(scope):
+        return None
+    rows = con.execute("SELECT area_name, district_name, territory_name, division_name, territory_manager_name, territory_manager_email FROM territory_alignment_hierarchy").fetchall()
+    hcps = [r[0] for r in con.execute(f"SELECT DISTINCT hcp_full_name FROM hcp_summary_with_territory_and_tm_info WHERE {SCOPE_COL[scope['level']]} = ?", [scope["value"]]).fetchall()]
+    return build_access(scope, rows, hcps)
 
 
 def _json_default(o):
@@ -75,7 +98,7 @@ def guard_node(state):
 
 def execute_node(state):
     try:
-        con = connect()
+        con = connect(state.get("scope"))
         res = con.execute(state["sql"])
         cols = [d[0] for d in res.description]
         rows = res.fetchmany(200)
@@ -122,6 +145,8 @@ def grounded(narration, table):
 
 
 def narrate_node(state):
+    if not state.get("rows"):
+        return {"table": "", "answer": "No matching data within your access scope for that question."}
     table = render_table(state["columns"], state["rows"])
     if state.get("skip_narrate"):
         return {"table": table, "answer": ""}
@@ -129,4 +154,4 @@ def narrate_node(state):
               "Answer in one or two short sentences using only numbers shown in the results. "
               "Keep placeholders like <HCP_FULL_NAME_3> exactly as written.")
     text = get_llm("router").invoke(prompt).content.strip()
-    return {"table": table, "answer": text if grounded(text, table) else "(summary skipped: numbers could not be verified; see table)"}
+    return {"table": table, "answer": text if valid_narration(text, table) else plain_summary(state["columns"], state["rows"])}

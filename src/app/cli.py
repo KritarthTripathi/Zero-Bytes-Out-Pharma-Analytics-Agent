@@ -16,6 +16,14 @@ def main():
         s.add_argument("--explain", action="store_true", help="show the routing decisions and the planner's query template")
         s.add_argument("--no-trace", action="store_true")
     args = ap.parse_args()
+    try:
+        env = verify_environment()
+        if env["status"] == "drift":
+            print(f"WARNING: environment differs from the pinned manifest ({len(env['differences'])} differences, e.g. {env['differences'][0]})")
+    except Exception as e:
+        print(f"WARNING: environment check failed: {e}")
+        if "pinned manifest" in str(e):
+            return
     if not args.no_trace:
         init_tracing()
     vault = PIIVault()
